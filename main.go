@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,7 @@ import (
 
 	"github.com/landakram/plaid-cli/pkg/plaid_cli"
 	"github.com/manifoldco/promptui"
-	"github.com/plaid/plaid-go/plaid"
+	plaid "github.com/plaid/plaid-go/plaid"
 	"github.com/spf13/cobra"
 
 	"github.com/spf13/viper"
@@ -64,7 +65,7 @@ func main() {
 	data, err := plaid_cli.LoadData(dataDir)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(DescribePlaidError(err))
 	}
 
 	viper.SetConfigName("config")
@@ -76,7 +77,7 @@ func main() {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// Config file not found; ignore error if desired
 		} else {
-			log.Fatal(err)
+			log.Fatal(DescribePlaidError(err))
 		}
 	}
 
@@ -119,33 +120,34 @@ func main() {
 		log.Fatalln("⚠️  Invalid language code. Please configure `plaid.language` (using an envvar, PLAID_LANGUAGE, or in plaid-cli's config file) to a language that Plaid supports. Plaid supports the following languages: ", plaidSupportedLanguages)
 	}
 
-	viper.SetDefault("plaid.environment", "development")
+	plaidCountries, err := PlaidCountryCodes(countries)
+	if err != nil {
+		log.Fatalln(DescribePlaidError(err))
+	}
+
+	viper.SetDefault("plaid.environment", "sandbox")
 	plaidEnvStr := strings.ToLower(viper.GetString("plaid.environment"))
 
 	var plaidEnv plaid.Environment
 	switch plaidEnvStr {
-	case "development":
-		plaidEnv = plaid.Development
+	case "sandbox":
+		plaidEnv = plaid.Sandbox
 	case "production":
 		plaidEnv = plaid.Production
+	case "development":
+		log.Fatalln("Invalid plaid environment: 'development' has been decommissioned. Use 'sandbox' or 'production'.")
 	default:
-		log.Fatalln("Invalid plaid environment. Valid plaid environments are 'development' or 'production'.")
+		log.Fatalln("Invalid plaid environment. Valid plaid environments are 'sandbox' or 'production'.")
 	}
 
-	opts := plaid.ClientOptions{
-		viper.GetString("plaid.client_id"),
-		viper.GetString("plaid.secret"),
-		plaidEnv,
-		&http.Client{},
-	}
+	configuration := plaid.NewConfiguration()
+	configuration.AddDefaultHeader("PLAID-CLIENT-ID", viper.GetString("plaid.client_id"))
+	configuration.AddDefaultHeader("PLAID-SECRET", viper.GetString("plaid.secret"))
+	configuration.UseEnvironment(plaidEnv)
+	configuration.HTTPClient = &http.Client{}
 
-	client, err := plaid.NewClient(opts)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	linker := plaid_cli.NewLinker(data, client, countries, lang)
+	client := plaid.NewAPIClient(configuration)
+	linker := plaid_cli.NewLinker(data, client, plaidCountries, lang)
 
 	linkCommand := &cobra.Command{
 		Use:   "link [ITEM-ID-OR-ALIAS]",
@@ -173,14 +175,14 @@ func main() {
 			} else {
 				tokenPair, err = linker.Link(port)
 				if err != nil {
-					log.Fatalln(err)
+					log.Fatalln(DescribePlaidError(err))
 				}
 				data.Tokens[tokenPair.ItemID] = tokenPair.AccessToken
 				err = data.Save()
 			}
 
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 
 			log.Println("Institution linked!")
@@ -212,13 +214,13 @@ func main() {
 
 			input, err := prompt.Run()
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 
 			if input != "" {
 				err = SetAlias(data, tokenPair.ItemID, input)
 				if err != nil {
-					log.Fatalln(err)
+					log.Fatalln(DescribePlaidError(err))
 				}
 			}
 		},
@@ -242,7 +244,7 @@ func main() {
 
 			printJSON, err := json.MarshalIndent(resolved, "", "  ")
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 			fmt.Println(string(printJSON))
 		},
@@ -259,7 +261,7 @@ func main() {
 
 			err := SetAlias(data, itemID, alias)
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 		},
 	}
@@ -270,7 +272,7 @@ func main() {
 		Run: func(cmd *cobra.Command, args []string) {
 			printJSON, err := json.MarshalIndent(data.Aliases, "", "  ")
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 			fmt.Println(string(printJSON))
 		},
@@ -289,13 +291,19 @@ func main() {
 			}
 
 			err := WithRelinkOnAuthError(itemOrAlias, data, linker, func() error {
-				token := data.Tokens[itemOrAlias]
-				res, err := client.GetAccounts(token)
+				token, err := AccessTokenForItem(data, itemOrAlias)
 				if err != nil {
 					return err
 				}
 
-				b, err := json.MarshalIndent(res.Accounts, "", "  ")
+				res, _, err := client.PlaidApi.AccountsGet(context.Background()).
+					AccountsGetRequest(*plaid.NewAccountsGetRequest(token)).
+					Execute()
+				if err != nil {
+					return err
+				}
+
+				b, err := json.MarshalIndent(res.GetAccounts(), "", "  ")
 				if err != nil {
 					return err
 				}
@@ -306,7 +314,7 @@ func main() {
 			})
 
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 		},
 	}
@@ -327,22 +335,24 @@ func main() {
 			}
 
 			err := WithRelinkOnAuthError(itemOrAlias, data, linker, func() error {
-				token := data.Tokens[itemOrAlias]
+				token, err := AccessTokenForItem(data, itemOrAlias)
+				if err != nil {
+					return err
+				}
 
 				var accountIDs []string
 				if len(accountID) > 0 {
 					accountIDs = append(accountIDs, accountID)
 				}
 
-				options := plaid.GetTransactionsOptions{
-					StartDate:  fromFlag,
-					EndDate:    toFlag,
-					AccountIDs: accountIDs,
-					Count:      100,
-					Offset:     0,
+				options := plaid.NewTransactionsGetRequestOptions()
+				options.SetCount(100)
+				options.SetOffset(0)
+				if len(accountIDs) > 0 {
+					options.SetAccountIds(accountIDs)
 				}
 
-				transactions, err := AllTransactions(options, client, token)
+				transactions, err := AllTransactions(*options, client, token, fromFlag, toFlag)
 				if err != nil {
 					return err
 				}
@@ -363,7 +373,7 @@ func main() {
 			})
 
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 		},
 	}
@@ -391,25 +401,39 @@ func main() {
 			}
 
 			err := WithRelinkOnAuthError(itemOrAlias, data, linker, func() error {
-				token := data.Tokens[itemOrAlias]
-
-				itemResp, err := client.GetItem(token)
+				token, err := AccessTokenForItem(data, itemOrAlias)
 				if err != nil {
 					return err
 				}
 
-				instID := itemResp.Item.InstitutionID
-
-				opts := plaid.GetInstitutionByIDOptions{
-					IncludeOptionalMetadata: withOptionalMetadataFlag,
-					IncludeStatus:           withStatusFlag,
-				}
-				resp, err := client.GetInstitutionByIDWithOptions(instID, countries, opts)
+				itemResp, _, err := client.PlaidApi.ItemGet(context.Background()).
+					ItemGetRequest(*plaid.NewItemGetRequest(token)).
+					Execute()
 				if err != nil {
 					return err
 				}
 
-				b, err := json.MarshalIndent(resp.Institution, "", "  ")
+				item := itemResp.GetItem()
+				instID := item.GetInstitutionId()
+				if instID == "" {
+					return errors.New("institution ID missing from Plaid item")
+				}
+
+				opts := plaid.NewInstitutionsGetByIdRequestOptions()
+				opts.SetIncludeOptionalMetadata(withOptionalMetadataFlag)
+				opts.SetIncludeStatus(withStatusFlag)
+
+				request := plaid.NewInstitutionsGetByIdRequest(instID, plaidCountries)
+				request.SetOptions(*opts)
+
+				resp, _, err := client.PlaidApi.InstitutionsGetById(context.Background()).
+					InstitutionsGetByIdRequest(*request).
+					Execute()
+				if err != nil {
+					return err
+				}
+
+				b, err := json.MarshalIndent(resp.GetInstitution(), "", "  ")
 				if err != nil {
 					return err
 				}
@@ -420,7 +444,7 @@ func main() {
 			})
 
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatalln(DescribePlaidError(err))
 			}
 		},
 	}
@@ -444,8 +468,8 @@ Configuration:
   plaid-cli will look at the following environment variables for API credentials:
   
     PLAID_CLIENT_ID=<client id>
-    PLAID_SECRET=<devlopment secret>
-    PLAID_ENVIRONMENT=development
+    PLAID_SECRET=<sandbox secret>
+    PLAID_ENVIRONMENT=sandbox
     PLAID_LANGUAGE=en  # optional, detected using system's locale
     PLAID_COUNTRIES=US # optional, detected using system's locale
   
@@ -456,8 +480,8 @@ Configuration:
   
     [plaid]
     client_id = "<client id>"
-    secret = "<development secret>"
-    environment = "development"
+    secret = "<sandbox secret>"
+    environment = "sandbox"
   
   After setting those API credentials, plaid-cli is ready to use! 
   You'll probably want to run 'plaid-cli link' next.
@@ -487,51 +511,113 @@ Configuration:
 		os.Exit(1)
 	}
 
-	rootCommand.Execute()
+	if err := rootCommand.Execute(); err != nil {
+		log.Fatalln(DescribePlaidError(err))
+	}
 }
 
-func AllTransactions(opts plaid.GetTransactionsOptions, client *plaid.Client, token string) ([]plaid.Transaction, error) {
-	var transactions []plaid.Transaction
+func PlaidCountryCodes(countries []string) ([]plaid.CountryCode, error) {
+	plaidCountries := make([]plaid.CountryCode, 0, len(countries))
+	for _, country := range countries {
+		plaidCountry, err := plaid.NewCountryCodeFromValue(country)
+		if err != nil {
+			return nil, err
+		}
 
-	res, err := client.GetTransactionsWithOptions(token, opts)
+		plaidCountries = append(plaidCountries, *plaidCountry)
+	}
+
+	return plaidCountries, nil
+}
+
+func AllTransactions(opts plaid.TransactionsGetRequestOptions, client *plaid.APIClient, token string, from string, to string) ([]plaid.Transaction, error) {
+	transactions := make([]plaid.Transaction, 0)
+
+	request := plaid.NewTransactionsGetRequest(token, from, to)
+	request.SetOptions(opts)
+
+	res, _, err := client.PlaidApi.TransactionsGet(context.Background()).
+		TransactionsGetRequest(*request).
+		Execute()
 	if err != nil {
 		return transactions, err
 	}
 
-	transactions = append(transactions, res.Transactions...)
+	transactions = append(transactions, res.GetTransactions()...)
 
-	for len(transactions) < res.TotalTransactions {
-		opts.Offset += opts.Count
-		res, err := client.GetTransactionsWithOptions(token, opts)
+	for len(transactions) < int(res.GetTotalTransactions()) {
+		opts.SetOffset(opts.GetOffset() + opts.GetCount())
+
+		request := plaid.NewTransactionsGetRequest(token, from, to)
+		request.SetOptions(opts)
+
+		res, _, err = client.PlaidApi.TransactionsGet(context.Background()).
+			TransactionsGetRequest(*request).
+			Execute()
 		if err != nil {
 			return transactions, err
 		}
 
-		transactions = append(transactions, res.Transactions...)
+		transactions = append(transactions, res.GetTransactions()...)
 
 	}
 
 	return transactions, nil
 }
 
+func AccessTokenForItem(data *plaid_cli.Data, itemID string) (string, error) {
+	token, ok := data.Tokens[itemID]
+	if !ok || token == "" {
+		return "", fmt.Errorf("No access token found for `%s`. Run `plaid-cli aliases` to see saved aliases, or `plaid-cli link` to create a new link.", itemID)
+	}
+
+	return token, nil
+}
+
+func DescribePlaidError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	plaidErr, plaidErrParseErr := plaid.ToPlaidError(err)
+	if plaidErrParseErr != nil {
+		return err
+	}
+
+	message := fmt.Sprintf("%s: %s", plaidErr.GetErrorCode(), plaidErr.GetErrorMessage())
+
+	if requestID := plaidErr.GetRequestId(); requestID != "" {
+		message = fmt.Sprintf("%s (request_id: %s)", message, requestID)
+	}
+
+	if suggestedAction := plaidErr.GetSuggestedAction(); suggestedAction != "" {
+		message = fmt.Sprintf("%s | suggested_action: %s", message, suggestedAction)
+	}
+
+	return errors.New(message)
+}
+
 func WithRelinkOnAuthError(itemID string, data *plaid_cli.Data, linker *plaid_cli.Linker, action func() error) error {
 	err := action()
-	if e, ok := err.(plaid.Error); ok {
-		if e.ErrorCode == "ITEM_LOGIN_REQUIRED" {
-			log.Println("Login expired. Relinking...")
+	if err == nil {
+		return nil
+	}
 
-			port := viper.GetString("link.port")
+	plaidErr, plaidErrParseErr := plaid.ToPlaidError(err)
+	if plaidErrParseErr == nil && plaidErr.ErrorCode == "ITEM_LOGIN_REQUIRED" {
+		log.Println("Login expired. Relinking...")
 
-			err = linker.Relink(itemID, port)
+		port := viper.GetString("link.port")
 
-			if err != nil {
-				return err
-			}
+		err = linker.Relink(itemID, port)
 
-			log.Println("Re-running action...")
-
-			err = action()
+		if err != nil {
+			return err
 		}
+
+		log.Println("Re-running action...")
+
+		err = action()
 	}
 
 	return err
@@ -595,5 +681,9 @@ func SetAlias(data *plaid_cli.Data, itemID string, alias string) error {
 type JSONSerializer struct{}
 
 func (w *JSONSerializer) serialize(txs []plaid.Transaction) ([]byte, error) {
+	if txs == nil {
+		txs = make([]plaid.Transaction, 0)
+	}
+
 	return json.MarshalIndent(txs, "", "  ")
 }

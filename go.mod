@@ -8,7 +8,7 @@ require (
 	github.com/manifoldco/promptui v0.7.0
 	github.com/mitchellh/mapstructure v1.3.2 // indirect
 	github.com/pelletier/go-toml v1.8.0 // indirect
-	github.com/plaid/plaid-go v0.0.0-20210112002311-0cf0e6f0ea3e
+	github.com/plaid/plaid-go v1.10.0
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/spf13/afero v1.2.2 // indirect
 	github.com/spf13/cast v1.3.1 // indirect
@@ -16,7 +16,6 @@ require (
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/spf13/viper v1.7.0
-	github.com/stretchr/testify v1.6.1 // indirect
 	golang.org/x/text v0.3.3
 	gopkg.in/ini.v1 v1.57.0 // indirect
 )

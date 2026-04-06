@@ -1,6 +1,7 @@
 package plaid_cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,7 +9,7 @@ import (
 	"os"
 	"text/template"
 
-	"github.com/plaid/plaid-go/plaid"
+	plaid "github.com/plaid/plaid-go/plaid"
 	"github.com/skratchdot/open-golang/open"
 )
 
@@ -16,9 +17,9 @@ type Linker struct {
 	Results       chan string
 	RelinkResults chan bool
 	Errors        chan error
-	Client        *plaid.Client
+	Client        *plaid.APIClient
 	Data          *Data
-	countries     []string
+	countries     []plaid.CountryCode
 	lang          string
 }
 
@@ -29,43 +30,47 @@ type TokenPair struct {
 
 func (l *Linker) Relink(itemID string, port string) error {
 	token := l.Data.Tokens[itemID]
+	if token == "" {
+		return fmt.Errorf("No access token found for `%s`. Run `plaid-cli aliases` to see saved aliases, or `plaid-cli link` to create a new link.", itemID)
+	}
+
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	resp, err := l.Client.CreateLinkToken(plaid.LinkTokenConfigs{
-		User: &plaid.LinkTokenUser{
-			ClientUserID: hostname,
-		},
-		ClientName:   "plaid-cli",
-		CountryCodes: l.countries,
-		Language:     l.lang,
-		AccessToken:  token,
-	})
+
+	user := plaid.NewLinkTokenCreateRequestUser(hostname)
+	request := plaid.NewLinkTokenCreateRequest("plaid-cli", l.lang, l.countries, *user)
+	request.SetAccessToken(token)
+
+	resp, _, err := l.Client.PlaidApi.LinkTokenCreate(context.Background()).
+		LinkTokenCreateRequest(*request).
+		Execute()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	return l.relink(port, resp.LinkToken)
+
+	return l.relink(port, resp.GetLinkToken())
 }
 
 func (l *Linker) Link(port string) (*TokenPair, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	resp, err := l.Client.CreateLinkToken(plaid.LinkTokenConfigs{
-		User: &plaid.LinkTokenUser{
-			ClientUserID: hostname,
-		},
-		ClientName:   "plaid-cli",
-		Products:     []string{"transactions"},
-		CountryCodes: l.countries,
-		Language:     l.lang,
-	})
+
+	user := plaid.NewLinkTokenCreateRequestUser(hostname)
+	request := plaid.NewLinkTokenCreateRequest("plaid-cli", l.lang, l.countries, *user)
+	request.SetProducts([]plaid.Products{plaid.PRODUCTS_TRANSACTIONS})
+
+	resp, _, err := l.Client.PlaidApi.LinkTokenCreate(context.Background()).
+		LinkTokenCreateRequest(*request).
+		Execute()
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	return l.link(port, resp.LinkToken)
+
+	return l.link(port, resp.GetLinkToken())
 }
 
 func (l *Linker) link(port string, linkToken string) (*TokenPair, error) {
@@ -94,8 +99,8 @@ func (l *Linker) link(port string, linkToken string) (*TokenPair, error) {
 		}
 
 		pair := &TokenPair{
-			ItemID:      res.ItemID,
-			AccessToken: res.AccessToken,
+			ItemID:      res.GetItemId(),
+			AccessToken: res.GetAccessToken(),
 		}
 
 		return pair, nil
@@ -125,11 +130,15 @@ func (l *Linker) relink(port string, linkToken string) error {
 	}
 }
 
-func (l *Linker) exchange(publicToken string) (plaid.ExchangePublicTokenResponse, error) {
-	return l.Client.ExchangePublicToken(publicToken)
+func (l *Linker) exchange(publicToken string) (plaid.ItemPublicTokenExchangeResponse, error) {
+	resp, _, err := l.Client.PlaidApi.ItemPublicTokenExchange(context.Background()).
+		ItemPublicTokenExchangeRequest(*plaid.NewItemPublicTokenExchangeRequest(publicToken)).
+		Execute()
+
+	return resp, err
 }
 
-func NewLinker(data *Data, client *plaid.Client, countries []string, lang string) *Linker {
+func NewLinker(data *Data, client *plaid.APIClient, countries []plaid.CountryCode, lang string) *Linker {
 	return &Linker{
 		Results:       make(chan string),
 		RelinkResults: make(chan bool),
