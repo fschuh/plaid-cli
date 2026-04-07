@@ -29,7 +29,7 @@ PLAID_CLIENT_ID=<client id>
 PLAID_SECRET=<sandbox secret>
 PLAID_ENVIRONMENT=sandbox
 PLAID_LANGUAGE=en  # optional, detected using system's locale
-PLAID_COUNTRIES=US # optional, detected using system's locale
+PLAID_COUNTRIES=CA # optional, detected using system's locale; use US,CA for both
 ```
 
 I recommend setting and exporting these on shell startup.
@@ -42,6 +42,7 @@ API credentials can also be specified using a config file located at
 client_id = "<client id>"
 secret = "<sandbox secret>"
 environment = "sandbox"
+countries = ["CA"] # optional, or ["US", "CA"] for both
 ```
 
 After setting those API credentials, plaid-cli is ready to use!

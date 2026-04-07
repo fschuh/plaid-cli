@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/landakram/plaid-cli/pkg/plaid_cli"
 	"github.com/manifoldco/promptui"
@@ -52,6 +53,22 @@ func AreValidCountries(countries []string) bool {
 func IsValidLanguageCode(lang string) bool {
 	supportedLanguages := sliceToMap(plaidSupportedLanguages)
 	return supportedLanguages[lang]
+}
+
+func NormalizeCountries(countriesOpt []string) []string {
+	countries := make([]string, 0, len(countriesOpt))
+	for _, opt := range countriesOpt {
+		for _, country := range strings.FieldsFunc(opt, func(r rune) bool {
+			return r == ',' || unicode.IsSpace(r)
+		}) {
+			country = strings.ToUpper(strings.TrimSpace(country))
+			if country != "" {
+				countries = append(countries, country)
+			}
+		}
+	}
+
+	return countries
 }
 
 func main() {
@@ -103,11 +120,7 @@ func main() {
 	lang := base.String()
 
 	viper.SetDefault("plaid.countries", []string{country})
-	countriesOpt := viper.GetStringSlice("plaid.countries")
-	var countries []string
-	for _, c := range countriesOpt {
-		countries = append(countries, strings.ToUpper(c))
-	}
+	countries := NormalizeCountries(viper.GetStringSlice("plaid.countries"))
 
 	viper.SetDefault("plaid.language", lang)
 	lang = viper.GetString("plaid.language")
@@ -471,8 +484,8 @@ Configuration:
     PLAID_SECRET=<sandbox secret>
     PLAID_ENVIRONMENT=sandbox
     PLAID_LANGUAGE=en  # optional, detected using system's locale
-    PLAID_COUNTRIES=US # optional, detected using system's locale
-  
+    PLAID_COUNTRIES=CA # optional, detected using system's locale; use US,CA for both
+
   I recommend setting and exporting these on shell startup.
   
   API credentials can also be specified using a config file located at 
@@ -482,7 +495,8 @@ Configuration:
     client_id = "<client id>"
     secret = "<sandbox secret>"
     environment = "sandbox"
-  
+    countries = ["CA"] # optional, or ["US", "CA"] for both
+
   After setting those API credentials, plaid-cli is ready to use! 
   You'll probably want to run 'plaid-cli link' next.
   
